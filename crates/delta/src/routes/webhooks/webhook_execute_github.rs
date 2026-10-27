@@ -1,12 +1,12 @@
-use revolt_database::{util::reference::Reference, Database, Message, AMQP};
+use revolt_database::{AMQP, Database, Message, util::reference::Reference};
 use revolt_models::v0::{MessageAuthor, SendableEmbed, Webhook};
-use revolt_result::{create_error, Error, Result};
+use revolt_result::{Error, Result, create_error};
 use revolt_rocket_okapi::{
-    gen::OpenApiGenerator,
+    r#gen::OpenApiGenerator,
     request::{OpenApiFromRequest, RequestHeaderInput},
     revolt_okapi::openapi3::{MediaType, Parameter, ParameterValue},
 };
-use rocket::{http::Status, request::FromRequest, Request, State};
+use rocket::{Request, State, http::Status, request::FromRequest};
 use schemars::schema::SchemaObject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -471,7 +471,7 @@ pub struct GithubTeam {
     id: u32,
     node_id: String,
     url: String,
-    hmtl_url: String,
+    html_url: String,
     name: String,
     slug: String,
     description: Option<String>,
@@ -999,7 +999,7 @@ pub async fn webhook_execute_github(
                 title: Some(event.sender.login),
                 description: Some(format!(
                     "#### [[{}] Issue Reopened #{}: {}]({})",
-                    event.repository.full_name, issue.number, issue.html_url, issue.title
+                    event.repository.full_name, issue.number, issue.title, issue.html_url
                 )),
                 colour: Some(GREEN.to_string()),
                 ..Default::default()

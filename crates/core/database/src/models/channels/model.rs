@@ -295,10 +295,9 @@ impl Channel {
 
         db.insert_channel(&channel).await?;
 
-        let event = EventV1::ChannelCreate(channel.clone().into());
-        for recipient in recipients {
-            event.clone().private(recipient).await;
-        }
+        EventV1::ChannelCreate(channel.clone().into())
+            .p_broadcast(recipients)
+            .await;
 
         Ok(channel)
     }
@@ -328,9 +327,9 @@ impl Channel {
             db.insert_channel(&channel).await?;
 
             if let Channel::DirectMessage { .. } = &channel {
-                let event = EventV1::ChannelCreate(channel.clone().into());
-                event.clone().private(user_a.id.clone()).await;
-                event.private(user_b.id.clone()).await;
+                EventV1::ChannelCreate(channel.clone().into())
+                    .p_broadcast(vec![user_a.id.clone(), user_b.id.clone()])
+                    .await;
             };
 
             Ok(channel)
@@ -392,7 +391,7 @@ impl Channel {
                 .ok();
 
                 EventV1::ChannelCreate(self.clone().into())
-                    .private(user.id.to_string())
+                    .p(user.id.to_string())
                     .await;
 
                 Ok(())
@@ -468,7 +467,6 @@ impl Channel {
         match self {
             Channel::TextChannel {
                 id,
-                server,
                 role_permissions,
                 ..
             } => {
@@ -486,7 +484,7 @@ impl Channel {
                     .into(),
                     clear: vec![],
                 }
-                .p(server.clone())
+                .p(id.clone())
                 .await;
 
                 Ok(())
@@ -516,10 +514,7 @@ impl Channel {
             data: partial.into(),
             clear: remove.into_iter().map(|v| v.into()).collect(),
         }
-        .p(match self {
-            Self::TextChannel { server, .. } => server.clone(),
-            _ => id,
-        })
+        .p(id)
         .await;
 
         Ok(())
@@ -560,7 +555,7 @@ impl Channel {
                     slowmode.take();
                 }
                 _ => {}
-            }
+            },
         }
     }
 
@@ -655,6 +650,122 @@ impl Channel {
         }
     }
 
+    /// Generates a PartialChannel containing the data which has changed in an update
+    pub fn generate_diff(
+        &self,
+        partial: &PartialChannel,
+        remove: &[FieldsChannel],
+    ) -> PartialChannel {
+        let mut before = PartialChannel::default();
+
+        match self {
+            Channel::SavedMessages { .. } => {}
+            Channel::DirectMessage {
+                active,
+                last_message_id,
+                ..
+            } => {
+                if partial.active.is_some() {
+                    before.active = Some(*active);
+                };
+
+                if partial.last_message_id.is_some() {
+                    before.last_message_id = last_message_id.clone()
+                };
+            }
+            Channel::Group {
+                name,
+                owner,
+                description,
+                icon,
+                last_message_id,
+                permissions,
+                nsfw,
+                ..
+            } => {
+                if partial.name.is_some() {
+                    before.name = Some(name.clone());
+                };
+
+                if partial.owner.is_some() {
+                    before.owner = Some(owner.clone());
+                };
+
+                if partial.description.is_some() || remove.contains(&FieldsChannel::Description) {
+                    before.description = description.clone();
+                };
+
+                if partial.icon.is_some() || remove.contains(&FieldsChannel::Icon) {
+                    before.icon = icon.clone();
+                };
+
+                if partial.last_message_id.is_some() {
+                    before.last_message_id = last_message_id.clone()
+                };
+
+                if partial.permissions.is_some() {
+                    before.permissions = *permissions;
+                };
+
+                if partial.nsfw.is_some() {
+                    before.nsfw = Some(*nsfw);
+                };
+            }
+            Channel::TextChannel {
+                name,
+                description,
+                icon,
+                last_message_id,
+                default_permissions,
+                role_permissions,
+                nsfw,
+                voice,
+                slowmode,
+                ..
+            } => {
+                if partial.name.is_some() {
+                    before.name = Some(name.clone());
+                };
+
+                if partial.description.is_some() || remove.contains(&FieldsChannel::Description) {
+                    before.description = description.clone();
+                };
+
+                if partial.icon.is_some() || remove.contains(&FieldsChannel::Icon) {
+                    before.icon = icon.clone();
+                };
+
+                if partial.last_message_id.is_some() {
+                    before.last_message_id = last_message_id.clone()
+                };
+
+                if partial.default_permissions.is_some()
+                    || remove.contains(&FieldsChannel::DefaultPermissions)
+                {
+                    before.default_permissions = *default_permissions;
+                };
+
+                if partial.role_permissions.is_some() {
+                    before.role_permissions = Some(role_permissions.clone());
+                };
+
+                if partial.nsfw.is_some() {
+                    before.nsfw = Some(*nsfw);
+                };
+
+                if partial.voice.is_some() || remove.contains(&FieldsChannel::Voice) {
+                    before.voice = voice.clone();
+                };
+
+                if partial.slowmode.is_some() {
+                    before.slowmode = *slowmode;
+                }
+            }
+        }
+
+        before
+    }
+
     /// Acknowledge a message
     pub async fn ack(&self, user: &str, message: &str, amqp: &AMQP) -> Result<()> {
         EventV1::ChannelAck {
@@ -662,7 +773,7 @@ impl Channel {
             user: user.to_string(),
             message_id: message.to_string(),
         }
-        .private(user.to_string())
+        .p(user.to_string())
         .await;
 
         crate::util::acker::ack_channel(user, self.id(), message, amqp).await
@@ -792,7 +903,7 @@ impl IntoDocumentPath for FieldsChannel {
 #[cfg(test)]
 mod tests {
     use revolt_permissions::{calculate_channel_permissions, ChannelPermission};
-
+    use lapin::{ExchangeKind, options::ExchangeDeclareOptions, types::FieldTable};
     use crate::{fixture, util::permissions::DatabasePermissionQuery};
 
     #[tokio::test]

@@ -1,4 +1,6 @@
 #!/bin/sh
+# If you're having trouble building this locally or on your CI, try lowering
+# the job count via CARGO_BUILD_JOBS. It defaults to 10.
 
 if [ -z "$TARGETARCH" ]; then
   :
@@ -34,6 +36,7 @@ deps() {
     crates/core/result/src \
     crates/core/coalesced/src \
     crates/core/ratelimits/src \
+    crates/common/otel/src \
     crates/services/autumn/src \
     crates/services/january/src \
     crates/services/gifbox/src \
@@ -59,12 +62,13 @@ deps() {
     tee crates/core/presence/src/lib.rs |
     tee crates/core/result/src/lib.rs |
     tee crates/core/coalesced/src/lib.rs |
-    tee crates/core/ratelimits/src/lib.rs
+    tee crates/core/ratelimits/src/lib.rs |
+    tee crates/common/otel/src/lib.rs
   
   if [ -z "$TARGETARCH" ]; then
-    cargo build -j 10 --locked --release
+    cargo build -j "${CARGO_BUILD_JOBS:-10}" --locked --release
   else
-    cargo build -j 10 --locked --release --target "${BUILD_TARGET}"
+    cargo build -j "${CARGO_BUILD_JOBS:-10}" --locked --release --target "${BUILD_TARGET}"
   fi
 }
 
@@ -83,12 +87,13 @@ apps() {
     crates/core/presence/src/lib.rs \
     crates/core/result/src/lib.rs \
     crates/core/coalesced/src/lib.rs \
-    crates/core/ratelimits/src/lib.rs
+    crates/core/ratelimits/src/lib.rs \
+    crates/common/otel/src/lib.rs
   
   if [ -z "$TARGETARCH" ]; then
-    cargo build -j 10 --locked --release
+    cargo build -j "${CARGO_BUILD_JOBS:-10}" --locked --release
   else
-    cargo build -j 10 --locked --release --target "${BUILD_TARGET}"
+    cargo build -j "${CARGO_BUILD_JOBS:-10}" --locked --release --target "${BUILD_TARGET}"
     mv target _target && mv _target/"${BUILD_TARGET}" target
   fi
 }

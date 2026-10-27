@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     extract::{DefaultBodyLimit, Path, State},
-    http::{header, Method},
+    http::{header, HeaderMap, Method},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
@@ -21,6 +21,7 @@ use revolt_files::{
 use revolt_result::{create_error, Error, Result, ToRevoltError};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use stoat_otel::WideContextRepository;
 use tempfile::NamedTempFile;
 use tokio::time::Instant;
 use tower_http::cors::{AllowHeaders, Any, CorsLayer};
@@ -58,6 +59,7 @@ pub async fn router() -> Router<AppState> {
         )
         .route("/:tag/:file_id", get(fetch_preview))
         .route("/:tag/:file_id/:file_name", get(fetch_file))
+        .route("/mod/:tag/:file_id/:file_name", get(fetch_file_mod))
         .layer(cors)
 }
 
@@ -105,6 +107,7 @@ static CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[utoipa::path(
     get,
     path = "/",
+    tag = "Files",
     responses(
         (status = 200, description = "Echo response", body = RootResponse)
     )
@@ -162,6 +165,7 @@ pub struct UploadResponse {
 #[utoipa::path(
     post,
     path = "/{tag}",
+    tag = "Files",
     responses(
         (status = 200, description = "Upload was successful", body = UploadResponse)
     ),
@@ -176,10 +180,13 @@ pub struct UploadResponse {
 )]
 async fn upload_file(
     State(db): State<Database>,
+    wide_context: WideContextRepository,
     user: User,
     Path(tag): Path<Tag>,
     TypedMultipart(UploadPayload { mut file }): TypedMultipart<UploadPayload>,
 ) -> Result<Json<UploadResponse>> {
+    wide_context.add("user_id", user.id.clone());
+
     // Fetch configuration
     let config = config().await;
 
@@ -357,6 +364,7 @@ pub static CACHE_CONTROL: &str = "public, max-age=604800, must-revalidate";
 #[utoipa::path(
     get,
     path = "/{tag}/{file_id}",
+    tag = "Files",
     responses(
         (status = 200, description = "Generated preview", body = Vec<u8>)
     ),
@@ -451,6 +459,7 @@ async fn fetch_preview(
 #[utoipa::path(
     get,
     path = "/{tag}/{file_id}/{file_name}",
+    tag = "Files",
     responses(
         (status = 200, description = "Original file", body = Vec<u8>)
     ),
@@ -497,6 +506,70 @@ async fn fetch_file(
                 (header::CONTENT_TYPE, hash.content_type),
                 (header::CONTENT_DISPOSITION, "attachment".to_owned()),
                 (header::CACHE_CONTROL, CACHE_CONTROL.to_owned()),
+            ],
+            data,
+        )
+            .into_response()
+    })
+}
+
+/// Fetch original file (Moderation)
+///
+/// This is intentionally left out of the OpenApi docs.
+/// It uses the config key api.security.admin_keys to determine access. This is intended for server to server communication.
+async fn fetch_file_mod(
+    State(db): State<Database>,
+    headers: HeaderMap,
+    Path((tag, file_id, file_name)): Path<(Tag, String, String)>,
+) -> Result<Response> {
+    let config = revolt_config::config().await;
+
+    let token = headers
+        .get("X-Admin-Token")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| create_error!(NotAuthenticated))?;
+
+    if !config
+        .api
+        .security
+        .admin_keys
+        .iter()
+        .any(|tok| tok == token)
+    {
+        return Err(create_error!(NotAuthenticated));
+    }
+
+    let tag: &'static str = tag.clone().into();
+    let file = db.fetch_attachment(tag, &file_id).await?;
+
+    // Ignore files that haven't been attached
+    if file.used_for.is_none() {
+        return Err(create_error!(NotFound));
+    }
+
+    // Ensure filename is correct
+    if file_name != file.filename {
+        if file_name == "original" {
+            let safe_filename = encode_component(&file.filename);
+
+            return Ok(
+                Redirect::permanent(&format!("/{tag}/{file_id}/{}", safe_filename)).into_response(),
+            );
+        }
+
+        return Err(create_error!(NotFound));
+    }
+
+    let hash = file.as_hash(&db).await?;
+    retrieve_file_by_hash(&hash).await.map(|data| {
+        (
+            [
+                (header::CONTENT_TYPE, hash.content_type),
+                (header::CONTENT_DISPOSITION, "attachment".to_owned()),
+                (
+                    header::CACHE_CONTROL,
+                    "private, max-age=300, must-revalidate".to_owned(),
+                ),
             ],
             data,
         )
