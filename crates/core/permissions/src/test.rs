@@ -409,24 +409,18 @@ async fn validate_timed_out_member() {
 }
 
 #[tokio::test]
-async fn validate_channel_default_below_server_roles() {
+async fn validate_channel_default_overrides_server_roles() {
     /// Scenario where:
-    /// - Server default allows ViewChannel.
-    /// - Channel default override denies SendMessage.
-    /// - Server role override allows SendMessage.
+    /// - A server role allows ViewChannel and SendMessage.
+    /// - The channel default override denies ViewChannel.
     /// - We don't have channel role overrides.
-    /// Since default permissions should be below role permissions,
-    /// our server role override (allowing SendMessage) should take precedence
-    /// over the channel default permission (denying SendMessage).
+    /// The channel default override should prevent access despite the role.
     struct Scenario {}
     let mut query = Scenario {};
 
     let perms = calculate_channel_permissions(&mut query).await;
     let value: u64 = perms.into();
-    assert_eq!(
-        value,
-        ChannelPermission::ViewChannel as u64 | ChannelPermission::SendMessage as u64
-    );
+    assert_eq!(value, 0);
 
     #[async_trait]
     impl PermissionQuery for Scenario {
@@ -463,12 +457,13 @@ async fn validate_channel_default_below_server_roles() {
         }
 
         async fn get_default_server_permissions(&mut self) -> u64 {
-            ChannelPermission::ViewChannel as u64
+            0
         }
 
         async fn get_our_server_role_overrides(&mut self) -> Vec<Override> {
             vec![Override {
-                allow: ChannelPermission::SendMessage as u64,
+                allow: ChannelPermission::ViewChannel as u64
+                    | ChannelPermission::SendMessage as u64,
                 deny: 0,
             }]
         }
@@ -492,7 +487,7 @@ async fn validate_channel_default_below_server_roles() {
         async fn get_default_channel_permissions(&mut self) -> Override {
             Override {
                 allow: 0,
-                deny: ChannelPermission::SendMessage as u64,
+                deny: ChannelPermission::ViewChannel as u64,
             }
         }
 
@@ -517,4 +512,3 @@ async fn validate_channel_default_below_server_roles() {
         }
     }
 }
-
